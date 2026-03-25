@@ -1,0 +1,136 @@
+# train_and_demo.py
+# Bias Detector AI - Preprocessing, Training, Evaluation, and Demo CLI/Streamlit
+import os
+import pandas as pd
+import numpy as np
+import joblib
+import argparse
+
+from sklearn.model_selection import train_test_split
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support, confusion_matrix, classification_report
+
+import nltk
+from nltk.corpus import stopwords
+import string
+
+# Ensure NLTK stopwords are downloaded
+try:
+    stopwords.words('english')
+except:
+    nltk.download('stopwords')
+
+STOPWORDS = set(stopwords.words('english'))
+
+def preprocess_text(text):
+    # Lowercase
+    text = text.lower()
+    # Remove punctuation
+    text = text.translate(str.maketrans('', '', string.punctuation + '“”‘’'))
+    # Tokenize and remove stopwords
+    tokens = [w for w in text.split() if w not in STOPWORDS]
+    return ' '.join(tokens)
+
+def load_and_prepare(df_path):
+    df = pd.read_csv(df_path)
+    # basic cleaning
+    df = df.dropna(subset=['text','label'])
+    df['text_clean'] = df['text'].astype(str).apply(preprocess_text)
+    return df
+
+def train_models(df_path, model_out='bias_model.pkl', vec_out='tfidf_vectorizer.pkl'):
+    df = load_and_prepare(df_path)
+    X = df['text_clean'].values
+    y = df['label'].values
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42, stratify=y)
+
+    # TF-IDF vectorization
+    vectorizer = TfidfVectorizer(max_features=5000, ngram_range=(1,2))
+    X_train_tf = vectorizer.fit_transform(X_train)
+    X_test_tf = vectorizer.transform(X_test)
+
+    # Logistic Regression
+    lr = LogisticRegression(max_iter=1000)
+    lr.fit(X_train_tf, y_train)
+    y_pred_lr = lr.predict(X_test_tf)
+    acc_lr = accuracy_score(y_test, y_pred_lr)
+
+    # Naive Bayes
+    nb = MultinomialNB()
+    nb.fit(X_train_tf, y_train)
+    y_pred_nb = nb.predict(X_test_tf)
+    acc_nb = accuracy_score(y_test, y_pred_nb)
+
+    # Save best model (choose by accuracy)
+    if acc_lr >= acc_nb:
+        best_model = lr
+        best_acc = acc_lr
+        model_name = 'LogisticRegression'
+    else:
+        best_model = nb
+        best_acc = acc_nb
+        model_name = 'NaiveBayes'
+
+    joblib.dump(best_model, model_out)
+    joblib.dump(vectorizer, vec_out)
+
+    # Detailed metrics print
+    print("Model chosen:", model_name)
+    print("Logistic Regression Accuracy:", acc_lr)
+    print("Naive Bayes Accuracy:", acc_nb)
+    print("\nClassification Report (Best Model):")
+    print(classification_report(y_test, best_model.predict(X_test_tf), digits=4))
+    print("Confusion Matrix:")
+    print(confusion_matrix(y_test, best_model.predict(X_test_tf)))
+
+    return best_model, vectorizer
+
+def predict_texts(model, vectorizer, texts):
+    texts_clean = [preprocess_text(t) for t in texts]
+    X_tf = vectorizer.transform(texts_clean)
+    preds = model.predict(X_tf)
+    return preds
+def save_example_files():
+    sample = pd.DataFrame({
+        'text': [
+            'Government launches new welfare scheme',
+            'Opposition criticizes government over rising prices',
+            'Government achieves record growth despite opposition'
+        ],
+        'label': ['neutral', 'left', 'right']
+    })
+    sample.to_csv('sample_bias_data.csv', index=False)
+    print('Saved sample_bias_data.csv')
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Train and test Bias Detector AI')
+    parser.add_argument('--train', action='store_true', help='Train models on dataset (provide --data path)')
+    parser.add_argument('--data', type=str, default='bias_data.csv', help='Path to dataset CSV')
+    parser.add_argument('--demo', action='store_true', help='Run a quick demo (requires trained model & vectorizer)')
+    parser.add_argument('--save-sample', action='store_true', help='Save a small sample CSV to get started')
+    args = parser.parse_args()
+
+    if args.save_sample:
+        save_example_files()
+
+    if args.train:
+        if not os.path.exists(args.data):
+            print('Dataset not found at', args.data)
+        else:
+            train_models(args.data)
+    if args.demo:
+        if not os.path.exists('bias_model.pkl') or not os.path.exists('tfidf_vectorizer.pkl'):
+            print('Please train the model first (generate bias_model.pkl and tfidf_vectorizer.pkl).')
+        else:
+            model = joblib.load('bias_model.pkl')
+            vec = joblib.load('tfidf_vectorizer.pkl')
+            print('Enter sentences (blank line to exit):')
+            while True:
+                s = input('> ').strip()
+                if s == '':
+                    break
+                pred = predict_texts(model, vec, [s])[0]
+                print('Prediction:', pred)
